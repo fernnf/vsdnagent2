@@ -146,3 +146,4 @@ class OpenflowController(RyuApp):
                 raise ValueError("vlan_id is not configured")
 
             return self._vlan_link(self.openflow, tport, vport, vlan_id, cmd)
+
