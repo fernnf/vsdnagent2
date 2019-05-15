@@ -116,7 +116,7 @@ class OvsdbController(RyuApp):
         assert self.is_live, "The OVSDB is not working"
 
         ret = self.__run_command("add-port", [bridge_name, port_name])
-        assert (ret is None), "Cannot to add port to network element"
+        assert (ret is not None), "Cannot to add port to network element"
 
         if ret is None:
             if type is not None:

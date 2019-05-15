@@ -54,13 +54,13 @@ class OpenflowController(RyuApp):
         self.openflow = ev.switch.dp
         self.is_live = True
         logger.info(
-            "Transport Switch DPID ({id}) configured to OpenFlow Controller".format(id=dpid_to_str(self.openflow.id)))
+            "Transport Switch DPID ({id}) Configured to OpenFlow Controller".format(id=dpid_to_str(self.openflow.id)))
 
     @set_ev_cls(event.EventSwitchLeave)
     def _switch_leave(self, ev):
         self.is_live = False
         self.openflow = None
-        logger.info("The openflow switch ({v}) is disconnected".format(v=dpid_to_str(ev.switch.dp.id)))
+        logger.info("The Openflow Switch ({v}) is Disconnected".format(v=dpid_to_str(ev.switch.dp.id)))
 
     def __mod_flow(self, dp, flow, cmd):
         cmd_supported = {
@@ -146,4 +146,7 @@ class OpenflowController(RyuApp):
                 raise ValueError("vlan_id is not configured")
 
             return self._vlan_link(self.openflow, tport, vport, vlan_id, cmd)
+
+        else:
+            raise ValueError("the encap type is unknown")
 
