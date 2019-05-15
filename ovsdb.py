@@ -95,7 +95,7 @@ class OvsdbController(RyuApp):
         else:
             raise ValueError(ret)
 
-    def port_num(self, port_name):
+    def get_port_num(self, port_name):
         assert self.is_live, "The OVSDB is not working"
         ret = self.__get_ovs_attr("Interface", port_name, "ofport")
         return ret
