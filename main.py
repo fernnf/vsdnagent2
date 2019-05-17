@@ -59,8 +59,6 @@ vport_default = {
 logger = logging.getLogger("vsdnagent")
 
 
-
-
 class OvsdbController(object):
     def __init__(self, addr, tswitch):
 
@@ -169,10 +167,90 @@ class OvsdbController(object):
 
         return self.get_port_num(port_name)
 
+
 class OpenflowController(object):
     def __init__(self, dp):
         self.__dp = dp
         self.__status = False
+
+    def __mod_flow(self, flow, cmd):
+        cmd_supported = {
+            "add": self.__dp.ofproto.OFPFC_ADD,
+            "modify": self.__dp.ofproto.OFPFC_MODIFY,
+            "modify_strict": self.__dp.ofproto.OFPFC_MODIFY_STRICT,
+            "delete": self.__dp.ofproto.OFPFC_DELETE,
+            "delete_strict": self.__dp.ofproto.OFPFC_DELETE_STRICT
+        }
+
+        mod_cmd = cmd_supported.get(cmd, None)
+
+        if mod_cmd is None:
+            raise ValueError("command not found")
+
+        ofctl = supported_ofctl.get(self.__dp.ofproto.OFP_VERSION)
+        ofctl.mod_flow_entry(self.__dp, flow, mod_cmd)
+
+    def __get_match(self, **matchs):
+        mtch = {}
+        data = {}
+        for k, v in matchs.items():
+            data[k] = v
+
+        mtch["match"] = data
+
+        return mtch.copy()
+
+    def __get_actions(self, *actions):
+        act = {}
+        data = []
+
+        for v in actions:
+            data.append(v)
+
+        act["actions"] = data
+
+        return act.copy()
+
+    def __get_flow(self, match, actions, **attr):
+        flow = {}
+
+        for k, v in attr.items():
+            flow[k] = v
+
+        flow.update(match)
+        flow.update(actions)
+
+        return flow.copy()
+
+    def __vlan_link(self, tport, vport, vlan, cmd):
+
+        def egress():
+            match = self.__get_match(in_port=tport, vlan_vid=vlan)
+            actions = self.__get_actions({"type": "POP_VLAN"},
+                                         {"type": "OUTPUT", "port": vport})
+            flow = self.__get_flow(match, actions, flag=0)
+            self.__mod_flow(flow=flow, cmd=cmd)
+
+        def ingress():
+            match = self.__get_match(in_port=vport)
+            actions = self.__get_actions({"type": "PUSH_VLAN", "ethertype": 33024},
+                                         {"type": "SET_FIELD", "field": "vlan_vid", "value": (int(vlan) + 0x1000)},
+                                         {"type": "OUTPUT", "port": tport})
+            flow = self.__get_flow(match, actions, flag=1)
+            self.__mod_flow(flow=flow, cmd=cmd)
+
+        if self.__status:
+            egress()
+            ingress()
+            return True
+        else:
+            raise ValueError("The openflow switch cannot be reach")
+
+    def add_link(self, tport, vport, encap, cmd, **kwargs):
+
+        if encap is "vlan":
+            vlan_id = kwargs.get("vlan_id")
+
 
     def get_status(self):
         return self.__status
