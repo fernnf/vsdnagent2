@@ -24,6 +24,7 @@ supported_ofctl = {
     ofproto_v1_5.OFP_VERSION: ofctl_v1_5
 }
 
+
 def __mod_flow(dp, flow, cmd):
     cmd_supported = {
         "add": dp.ofproto.OFPFC_ADD,
@@ -42,6 +43,7 @@ def __mod_flow(dp, flow, cmd):
 
     ofctl.mod_flow_entry(dp, flow, mod_cmd)
 
+
 def __get_match(**matchs):
     mtch = {}
     data = {}
@@ -51,6 +53,7 @@ def __get_match(**matchs):
     mtch["match"] = data
 
     return mtch.copy()
+
 
 def __get_actions(*actions):
     act = {}
@@ -63,6 +66,7 @@ def __get_actions(*actions):
 
     return act.copy()
 
+
 def __get_flow(match, actions, **attr):
     flow = {}
 
@@ -74,12 +78,12 @@ def __get_flow(match, actions, **attr):
 
     return flow.copy()
 
-def __vlan_link(dp, tport, vport, vlan, cmd):
 
+def __vlan_link(dp, tport, vport, vlan, cmd):
     def link_ingress():
         match = __get_match(in_port=tport, vlan_vid=vlan)
         actions = __get_actions({"type": "POP_VLAN"},
-                                     {"type": "OUTPUT", "port": vport})
+                                {"type": "OUTPUT", "port": vport})
         flow = __get_flow(match, actions, flag=0)
 
         __mod_flow(dp=dp, flow=flow, cmd=cmd)
@@ -87,8 +91,8 @@ def __vlan_link(dp, tport, vport, vlan, cmd):
     def link_egress():
         match = __get_match(in_port=vport)
         actions = __get_actions({"type": "PUSH_VLAN", "ethertype": 33024},
-                                     {"type": "SET_FIELD", "field": "vlan_vid", "value": (int(vlan) + 0x1000)},
-                                     {"type": "OUTPUT", "port": tport})
+                                {"type": "SET_FIELD", "field": "vlan_vid", "value": (int(vlan) + 0x1000)},
+                                {"type": "OUTPUT", "port": tport})
         flow = __get_flow(match, actions, flag=1)
 
         __mod_flow(dp=dp, flow=flow, cmd=cmd)
@@ -98,10 +102,9 @@ def __vlan_link(dp, tport, vport, vlan, cmd):
     return True
 
 
-def create_vlan_link(dp, tport, vport, vlan_id):
-    return __vlan_link(dp, tport, vport, vlan_id, cmd = "add")
-
-def delete_vlan_link(dp, tport, vport, vlan_id):
-    return __vlan_link(dp,tport,vport, vlan_id, cmd = "delete_strict")
+def add_vlan_link(dp, tport, vport, vlan_id):
+    return __vlan_link(dp, tport, vport, vlan_id, cmd="add")
 
 
+def rem_vlan_link(dp, tport, vport, vlan_id):
+    return __vlan_link(dp, tport, vport, vlan_id, cmd="delete_strict")

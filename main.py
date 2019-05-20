@@ -1,46 +1,18 @@
 import logging
+from uuid import uuid4
 
 from ryu import cfg
 from ryu.base.app_manager import RyuApp
-from ryu.controller.handler import set_ev_cls
-from ryu.lib import ofctl_v1_0
-from ryu.lib import ofctl_v1_2
-from ryu.lib import ofctl_v1_3
-from ryu.lib import ofctl_v1_4
-from ryu.lib import ofctl_v1_5
-from ryu.ofproto import ofproto_v1_0
-from ryu.ofproto import ofproto_v1_2
-from ryu.ofproto import ofproto_v1_3
-from ryu.ofproto import ofproto_v1_4
-from ryu.ofproto import ofproto_v1_5
-from ryu.topology import event
-from ryu.topology.switches import dpid_to_str
-from ryu.controller.handler import set_ev_cls
-from ryu.lib.ovs.vsctl import VSCtl, VSCtlCommand
-from ryu.services.protocols.ovsdb import event
+from ryu.lib.ovs.vsctl import VSCtl
+
 import openflow as ofctl
+import ovsdb as ovsctl
 
 opts = (cfg.StrOpt("ovsdb_controller", default="tcp:127.0.0.1:6641"),
         cfg.StrOpt("transport_switch", default="tswitch0"),
         cfg.StrOpt("openflow_controller", default="tcp:127.0.0.1:6653"))
 
 cfg.CONF.register_opts(opts)
-
-supported_ofctl = {
-    ofproto_v1_0.OFP_VERSION: ofctl_v1_0,
-    ofproto_v1_2.OFP_VERSION: ofctl_v1_2,
-    ofproto_v1_3.OFP_VERSION: ofctl_v1_3,
-    ofproto_v1_4.OFP_VERSION: ofctl_v1_4,
-    ofproto_v1_5.OFP_VERSION: ofctl_v1_5
-}
-
-openflow_version = {
-    ofproto_v1_0.OFP_VERSION: "OpenFlow10",
-    ofproto_v1_2.OFP_VERSION: "OpenFlow12",
-    ofproto_v1_3.OFP_VERSION: "OpenFlow13",
-    ofproto_v1_4.OFP_VERSION: "OpenFlow14",
-    ofproto_v1_5.OFP_VERSION: "OpenFlow15"
-}
 
 vswitch_default = {
     "name": None,
@@ -57,164 +29,129 @@ vport_default = {
     "type": None,
 }
 
-logger = logging.getLogger("vsdnagent")
-
 
 class OvsdbController(object):
-    def __init__(self, addr, tswitch):
+    logger = logging.getLogger("OvsdbController")
 
-        self.__status = True
-        self.__conn = VSCtl(addr)
-        self.__tswitch = tswitch
+    def __init__(self, db):
+        self.__ovsdb = VSCtl(db)
+        self.__status = False
 
-    def __run_command(self, cmd, args):
-        command = VSCtlCommand(cmd, args)
-        self.__conn.run_command([command])
-        return command.result
-
-    def __get_ovs_attr(self, table, record, column, key=None):
-        if key is not None:
-            column = "{c}:{k}".format(c=column, k=key)
-        if self.__status:
-            ret = self.__run_command("get", [table, record, column])
-            return ret[0]
-        else:
-            raise ConnectionError("The OVSDB is not available")
-
-    def __set_ovs_attr(self, table, record, column, value, key=None):
-        if key is not None:
-            column = "{c}:{k}".format(c=column, k=key)
-        if self.__status:
-            ret = self.__run_command("set", [table, record, "{c}={v}".format(c=column, v=value)])
-            if ret is None:
-                return True
-            else:
-                raise ValueError(ret)
-        else:
-            raise ConnectionError("The OVSDB is not available")
+    def set_status(self, v):
+        self.__status = v
 
     def get_status(self):
         return self.__status
 
-    def get_tswitch(self):
-        return self.__tswitch
+    def get_dpid(self, br_name):
+        assert self.get_status(), "the ovsdb connection is not working"
+        return ovsctl.get_dpid(self.__ovsdb, br_name)
 
-    def get_dpid(self, bridge):
-        assert self.__status, "The OVSDB is not working"
-        return self.__get_ovs_attr("Bridge", bridge, "datapath_id")
+    def get_portnum(self, v):
+        assert self.get_status(), "the ovsdb connection is not working"
+        return ovsctl.get_port_num(self.__ovsdb, v)
 
-    def bridge_exist(self, bridge):
-        assert self.__status, "The OVSDB is not working"
-        return self.__run_command("br-exists", [bridge])
+    def br_exist(self, name):
+        assert self.get_status(), "the ovsdb connection is not working"
+        return ovsctl.bridge_exist(self.__ovsdb, name)
 
-    def create_bridge(self, name, dpid=None, protocols=None):
-        assert (name is not None), "The bridge name cannot be null"
-        assert self.__status, "The OVSDB is not working"
+    def add_br(self, name, dpid=None, protocols=None):
+        assert self.get_status(), "the ovsdb connection is not working"
+        ovsctl.create_bridge(self.__ovsdb, name, dpid, protocols)
 
-        ret = self.__run_command("add-br", [name])
+    def rem_br(self, name):
+        assert self.get_status(), "the ovsdb connection is not working"
+        ovsctl.remove_bridge(self.__ovsdb, name)
 
-        if ret is None:
-            if dpid is not None:
-                self.__set_ovs_attr("Bridge", name, "other_config", dpid, "datapath_id")
-            if protocols is not None:
-                assert (isinstance(protocols, list)), "the protocols must be a list object"
-                ptr = ",".join(protocols)
-                self.__set_ovs_attr("Bridge", name, "protocols", ptr)
-            return True
-        else:
-            raise ValueError("Cannot to create bridge")
+    def add_port(self, br_name, port_name, peer_name=None, type=None, ofport=None):
+        assert self.get_status(), "the ovsdb connection is not working"
+        return ovsctl.create_port(self.__ovsdb, br_name, port_name, peer_name, type, ofport)
 
-    def remove_bridge(self, name):
-        assert self.__status, "The OVSDB is not working"
-        assert (self.bridge_exist(name)), "The bridge is not exist"
-
-        ret = self.__run_command("del-br", [name])
-        if ret is None:
-            return True
-        else:
-            raise ValueError(ret)
-
-    def get_port_num(self, port_name):
-        assert self.__status, "The OVSDB is not working"
-        return self.__get_ovs_attr("Interface", port_name, "ofport")
-
-    def delete_port(self, bridge_name, port_name):
-        assert (bridge_name is not None), "The bridge name cannot be null"
-        assert (port_name is not None), "The port name cannot be null"
-
-        ret = self.__run_command("del-port", [bridge_name, port_name])
-        assert (ret is None), "{err}".format(err=ret)
-
-        return True
-
-    def create_port(self, bridge_name, port_name, peer_name=None,type=None,ofport=None):
-        assert (bridge_name is not None), "The bridge name cannot be null"
-        assert (port_name is not None), "The port name cannot be null"
-
-        assert self.__status, "The OVSDB is not working"
-        ret = self.__run_command("add-port", [bridge_name, port_name])
-
-        assert (ret is None), "{err}".format(err=ret)
-
-        if ofport > 0:
-            self.__set_ovs_attr("Interface", port_name, "ofport_request", ofport)
-        else:
-            raise ValueError("Value Unsupported")
-
-        if type is "patch":
-            assert (peer_name is not None), "The peer name cannot be null"
-            self.__set_ovs_attr("Interface", port_name, "type", "patch")
-            self.__set_ovs_attr("Interface", port_name, "options", peer_name, "peer")
-
-        return self.get_port_num(port_name)
+    def rem_port(self, br_name, port_name):
+        assert self.get_status(), "the ovsdb connection is not working"
+        ovsctl.delete_port(self.__ovsdb, br_name, port_name)
 
 
 class OpenflowController(object):
+    logger = logging.getLogger("OpenFlowController")
+
     def __init__(self, dp):
         self.__dp = dp
         self.__status = False
 
-    def add_link(self, tport, vport, type, **kwargs):
-        assert (self.__status), "the openflow connection is not working"
+    def get_status(self):
+        return self.__status
 
+    def set_status(self, v):
+        self.__status = v
+        self.logger.info("the openflow switch on ({i})".format(i=self.__status))
+
+    def add_link(self, tport, vport, type, **kwargs):
+        assert self.get_status(), "the openflow connection is not working"
         if type is "vlan":
-            vid = kwargs.get("vlan_id")
+            vid = kwargs.get("vlan_id", None)
             if vid is None:
                 raise ValueError("The vlan id cannot be null")
-            return ofctl.create_vlan_link(self.__dp, tport, vport, vid)
+            return ofctl.add_vlan_link(self.__dp, tport, vport, vid)
         else:
-            logger.error("The type link value is unknown")
+            self.logger.error("The type link value is unknown")
 
     def rem_link(self, tport, vport, type, **kwargs):
-        assert (self.__status), "the openflow connection is not working"
-
+        assert self.get_status(), "the openflow connection is not working"
         if type is "vlan":
-            vid =  kwargs.get("vlan_id", None)
+            vid = kwargs.get("vlan_id", None)
             if vid is None:
                 raise ValueError("The vlan id cannot be null")
-            return ofctl.delete_vlan_link(self.__dp, tport, vport, vid)
+            return ofctl.rem_vlan_link(self.__dp, tport, vport, vid)
         else:
-            logger.error("The type link value is unknown")
-
+            self.logger.error("The type link value is unknown")
 
 
 class VSwitchManager(RyuApp):
+    logger = logging.getLogger("VSwitchManager")
 
     def __init__(self, *_args, **_kwargs):
         super(VSwitchManager, self).__init__(*_args, **_kwargs)
 
         self.vswitch = {}
-        self.ovsdb = OvsdbController(self.CONF.ovsdb_controller, self.CONF.transport_switch)
-        self.openflow = None
+        self.ovsdb = OvsdbController(self.CONF.ovsdb_controller)
+        self.openflow = OpenflowController(self.CONF.openflow_controller)
 
     def create_vswitch(self, name, dpid, protocols):
-        pass
+
+        def add():
+            self.ovsdb.add_br(name, dpid, protocols)
+            self.logger.info(
+                "New virtual switch ({s}) dpid ({d}) has created".format(s=name, d=self.ovsdb.get_dpid(name)))
+
+        def register():
+            vswitch = vswitch_default.copy()
+            vswitch["name"] = name
+            vswitch["dpid"] = (dpid if dpid is not None else self.ovsdb.get_dpid(name))
+            vswitch["protocols"] = protocols
+            self.vswitch.update({name: vswitch})
+
+        if not self.ovsdb.br_exist(name):
+            try:
+                add()
+                register()
+                return [(True, None)]
+            except Exception as ex:
+                self.logger.error(ex)
+                return [(False, ex)]
+        else:
+            self.logger.error("the vswitch already has exist")
+            return [(False, "the vswitch already has exist")]
 
     def count_vswitch(self):
-        pass
+        return len(self.vswitch)
 
     def delete_vswitch(self, name):
-        pass
+
+        def rem():
+            self.ovsdb.rem_br(name)
+            self.logger.info(
+                "the virtual switch ({s}) dpid ({d}) has removed".format(s=name, d=self.ovsdb.get_dpid(name)))
 
     def add_port(self, name, vswitch_name, vport_num, tport_num, type):
         pass

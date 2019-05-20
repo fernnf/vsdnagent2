@@ -6,15 +6,14 @@ from ryu.controller.handler import set_ev_cls
 from ryu.lib.ovs.vsctl import VSCtl, VSCtlCommand
 from ryu.services.protocols.ovsdb import event
 
-
 logger = logging.getLogger("ovsdb-controller")
 
 
 def __run_command(db, cmd, args):
-    ovsdb = VSCtl(db)
     command = VSCtlCommand(cmd, args)
-    ovsdb.run_command([command])
+    db.run_command([command])
     return command.result[0]
+
 
 def __get_ovs_attr(db, table, record, column, key=None):
     if key is not None:
@@ -22,20 +21,25 @@ def __get_ovs_attr(db, table, record, column, key=None):
 
     return __run_command(db, "get", [table, record, column])
 
+
 def __set_ovs_attr(db, table, record, column, value, key=None):
     if key is not None:
         column = "{c}:{k}".format(c=column, k=key)
 
-    return __run_command(db,"set", [table, record, "{c}={v}".format(c=column, v=value)])
+    return __run_command(db, "set", [table, record, "{c}={v}".format(c=column, v=value)])
+
 
 def get_dpid(db, bridge):
     return __get_ovs_attr(db, "Bridge", bridge, "datapath_id")
 
+
 def bridge_exist(db, bridge):
-    return __run_command(db,"br-exists", [bridge])
+    return __run_command(db, "br-exists", [bridge])
+
 
 def get_port_num(db, port_name):
-    return __get_ovs_attr(db,"Interface", port_name, "ofport")
+    return __get_ovs_attr(db, "Interface", port_name, "ofport")
+
 
 def create_bridge(db, name, dpid=None, protocols=None):
     assert (name is not None), "The bridge name cannot be null"
@@ -45,16 +49,15 @@ def create_bridge(db, name, dpid=None, protocols=None):
 
     if ret is None:
         if dpid is not None:
-            ret = __set_ovs_attr("Bridge", name, "other_config", dpid, "datapath_id")
+            ret = __set_ovs_attr(db,"Bridge", name, "other_config", dpid, "datapath_id")
             if ret is not None:
                 raise ValueError(ret)
         if protocols is not None:
             assert (isinstance(protocols, list)), "the protocols must be a list object"
             ptr = ".".join(protocols)
-            ret =  __set_ovs_attr(db, "Bridge", name, "protocols", ptr)
+            ret = __set_ovs_attr(db, "Bridge", name, "protocols", ptr)
             if ret is not None:
                 raise ValueError(ret)
-        return True
     else:
         raise Exception("It cannot create the bridge")
 
@@ -64,16 +67,14 @@ def remove_bridge(db, name):
     assert (bridge_exist(db, name)), "The bridge is not exist"
 
     ret = __run_command(db, "del-br", [name])
-    if ret is None:
-        return True
-    else:
+    if ret is not None:
         raise ValueError(ret)
 
 def create_port(db, bridge_name, port_name, peer_name=None, type=None, ofport=None):
     assert (bridge_exist(db, bridge_name)), "The bridge name cannot be null"
     assert (port_name is not None), "The port name cannot be null"
 
-    ret = __run_command(db,"add-port", [bridge_name, port_name])
+    ret = __run_command(db, "add-port", [bridge_name, port_name])
     if ret is not None:
         raise ValueError(ret)
 
@@ -84,11 +85,20 @@ def create_port(db, bridge_name, port_name, peer_name=None, type=None, ofport=No
             raise ValueError(typ)
 
     if ofport > 0:
-        cfg = __set_ovs_attr(db,"Interface", port_name, "ofport_request", ofport)
+        cfg = __set_ovs_attr(db, "Interface", port_name, "ofport_request", ofport)
         if cfg is not None:
             raise ValueError(cfg)
 
     return get_port_num(db, port_name)
+
+
+def delete_port(db, bridge_name, port_name):
+    assert (bridge_name is not None), "The bridge name cannot be null"
+    assert (port_name is not None), "The port name cannot be null"
+
+    ret = __run_command(db, "del-port", [bridge_name, port_name])
+    if ret is not None:
+        raise ValueError(ret)
 
 class OvsdbController(RyuApp):
 
@@ -231,8 +241,10 @@ class OvsdbController(RyuApp):
         def transport_exist():
             if self.bridge_exist(self.tp_sw):
                 self.transport_dpid = self.get_dpid(self.tp_sw)
-                logger.info("New OVSDB ({id}) from {ip} enables on network transport ".format(id=self.system_id,ip=ev.client.address[0]))
-                logger.info("Transport Switch DPID ({id}) configured to OVSDB Controller".format(id=self.transport_dpid))
+                logger.info("New OVSDB ({id}) from {ip} enables on network transport ".format(id=self.system_id,
+                                                                                              ip=ev.client.address[0]))
+                logger.info(
+                    "Transport Switch DPID ({id}) configured to OVSDB Controller".format(id=self.transport_dpid))
                 return True
             else:
                 logger.error("The transport bridge is not exist")
