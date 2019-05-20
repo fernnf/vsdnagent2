@@ -16,8 +16,6 @@ from ryu.topology import event
 from ryu.topology.switches import dpid_to_str
 from ryu.lib.ofctl_utils import str_to_int
 
-logger = logging.getLogger("Openflow")
-
 supported_ofctl = {
     ofproto_v1_0.OFP_VERSION: ofctl_v1_0,
     ofproto_v1_2.OFP_VERSION: ofctl_v1_2,
@@ -26,127 +24,84 @@ supported_ofctl = {
     ofproto_v1_5.OFP_VERSION: ofctl_v1_5
 }
 
+def __mod_flow(dp, flow, cmd):
+    cmd_supported = {
+        "add": dp.ofproto.OFPFC_ADD,
+        "modify": dp.ofproto.OFPFC_MODIFY,
+        "modify_strict": dp.ofproto.OFPFC_MODIFY_STRICT,
+        "delete": dp.ofproto.OFPFC_DELETE,
+        "delete_strict": dp.ofproto.OFPFC_DELETE_STRICT
+    }
 
-class OpenflowController(RyuApp):
+    mod_cmd = cmd_supported.get(cmd, None)
 
-    def __init__(self, *_args, **_kwargs):
-        super(OpenflowController, self).__init__(*_args, **_kwargs)
-        self.is_live = False
+    if mod_cmd is None:
+        raise ValueError("command not found")
 
-    @property
-    def is_live(self):
-        return self.__is_live
+    ofctl = supported_ofctl.get(dp.ofproto.OFP_VERSION)
 
-    @is_live.setter
-    def is_live(self, value):
-        self.__is_live = value
+    ofctl.mod_flow_entry(dp, flow, mod_cmd)
 
-    @property
-    def openflow(self):
-        return self.__openflow
+def __get_match(**matchs):
+    mtch = {}
+    data = {}
+    for k, v in matchs.items():
+        data[k] = v
 
-    @openflow.setter
-    def openflow(self, value):
-        self.__openflow = value
+    mtch["match"] = data
 
-    @set_ev_cls(event.EventSwitchEnter)
-    def __switch_enter(self, ev):
-        self.openflow = ev.switch.dp
-        self.is_live = True
-        logger.info(
-            "Transport Switch DPID ({id}) Configured to OpenFlow Controller".format(id=dpid_to_str(self.openflow.id)))
+    return mtch.copy()
 
-    @set_ev_cls(event.EventSwitchLeave)
-    def _switch_leave(self, ev):
-        self.is_live = False
-        self.openflow = None
-        logger.info("The Openflow Switch ({v}) is Disconnected".format(v=dpid_to_str(ev.switch.dp.id)))
+def __get_actions(*actions):
+    act = {}
+    data = []
 
-    def __mod_flow(self, dp, flow, cmd):
-        cmd_supported = {
-            "add": dp.ofproto.OFPFC_ADD,
-            "modify": dp.ofproto.OFPFC_MODIFY,
-            "modify_strict": dp.ofproto.OFPFC_MODIFY_STRICT,
-            "delete": dp.ofproto.OFPFC_DELETE,
-            "delete_strict": dp.ofproto.OFPFC_DELETE_STRICT
-        }
+    for v in actions:
+        data.append(v)
 
-        mod_cmd = cmd_supported.get(cmd, None)
+    act["actions"] = data
 
-        if mod_cmd is None:
-            raise ValueError("command not found")
+    return act.copy()
 
-        ofctl = supported_ofctl.get(dp.ofproto.OFP_VERSION)
+def __get_flow(match, actions, **attr):
+    flow = {}
 
-        ofctl.mod_flow_entry(dp, flow, mod_cmd)
+    for k, v in attr.items():
+        flow[k] = v
 
-    def __get_match(self, **matchs):
-        mtch = {}
-        data = {}
-        for k, v in matchs.items():
-            data[k] = v
+    flow.update(match)
+    flow.update(actions)
 
-        mtch["match"] = data
+    return flow.copy()
 
-        return mtch.copy()
+def __vlan_link(dp, tport, vport, vlan, cmd):
 
-    def __get_actions(self, *actions):
-        act = {}
-        data = []
+    def link_ingress():
+        match = __get_match(in_port=tport, vlan_vid=vlan)
+        actions = __get_actions({"type": "POP_VLAN"},
+                                     {"type": "OUTPUT", "port": vport})
+        flow = __get_flow(match, actions, flag=0)
 
-        for v in actions:
-            data.append(v)
+        __mod_flow(dp=dp, flow=flow, cmd=cmd)
 
-        act["actions"] = data
+    def link_egress():
+        match = __get_match(in_port=vport)
+        actions = __get_actions({"type": "PUSH_VLAN", "ethertype": 33024},
+                                     {"type": "SET_FIELD", "field": "vlan_vid", "value": (int(vlan) + 0x1000)},
+                                     {"type": "OUTPUT", "port": tport})
+        flow = __get_flow(match, actions, flag=1)
 
-        return act.copy()
+        __mod_flow(dp=dp, flow=flow, cmd=cmd)
 
-    def __get_flow(self, match, actions, **attr):
-        flow = {}
+    link_egress()
+    link_ingress()
+    return True
 
-        for k, v in attr.items():
-            flow[k] = v
 
-        flow.update(match)
-        flow.update(actions)
+def create_vlan_link(dp, tport, vport, vlan_id):
+    return __vlan_link(dp, tport, vport, vlan_id, cmd = "add")
 
-        return flow.copy()
+def delete_vlan_link(dp, tport, vport, vlan_id):
+    return __vlan_link(dp,tport,vport, vlan_id, cmd = "delete_strict")
 
-    def _vlan_link(self, dp, tport, vport, vlan, cmd):
-
-        def link_ingress():
-            match = self.__get_match(in_port=tport, vlan_vid=vlan)
-            actions = self.__get_actions({"type": "POP_VLAN"},
-                                         {"type": "OUTPUT", "port": vport})
-            flow = self.__get_flow(match, actions, flag=0)
-            self.__mod_flow(dp=dp, flow=flow, cmd=cmd)
-
-        def link_egress():
-            match = self.__get_match(in_port=vport)
-            actions = self.__get_actions({"type": "PUSH_VLAN", "ethertype": 33024},
-                                         {"type": "SET_FIELD", "field": "vlan_vid", "value": (int(vlan) + 0x1000)},
-                                         {"type": "OUTPUT", "port": tport})
-            flow = self.__get_flow(match, actions, flag=1)
-            self.__mod_flow(dp=dp, flow=flow, cmd=cmd)
-
-        try:
-            link_egress()
-            link_ingress()
-            logger.info("New virtual port encap vlan")
-            return True
-        except Exception as ex:
-            logger.error(ex)
-            return False
-
-    def virtual_link(self, tport, vport, type_encap, cmd, **kwargs):
-        if type_encap is "vlan":
-            vlan_id = kwargs.get("vlan_id")
-
-            if vlan_id is None:
-                raise ValueError("vlan_id is not configured")
-
-            return self._vlan_link(self.openflow, tport, vport, vlan_id, cmd)
-
-        else:
-            raise ValueError("the encap type is unknown")
 

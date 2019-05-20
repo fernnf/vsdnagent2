@@ -6,14 +6,89 @@ from ryu.controller.handler import set_ev_cls
 from ryu.lib.ovs.vsctl import VSCtl, VSCtlCommand
 from ryu.services.protocols.ovsdb import event
 
-opts = (cfg.StrOpt("ovsport", default="6641"),
-        cfg.StrOpt("transport_switch", default="tswitch0"),
-        cfg.StrOpt("openflow_controller", default="tcp:127.0.0.1:6653"))
-
-cfg.CONF.register_opts(opts)
 
 logger = logging.getLogger("ovsdb-controller")
 
+
+def __run_command(db, cmd, args):
+    ovsdb = VSCtl(db)
+    command = VSCtlCommand(cmd, args)
+    ovsdb.run_command([command])
+    return command.result[0]
+
+def __get_ovs_attr(db, table, record, column, key=None):
+    if key is not None:
+        column = "{c}:{k}".format(c=column, k=key)
+
+    return __run_command(db, "get", [table, record, column])
+
+def __set_ovs_attr(db, table, record, column, value, key=None):
+    if key is not None:
+        column = "{c}:{k}".format(c=column, k=key)
+
+    return __run_command(db,"set", [table, record, "{c}={v}".format(c=column, v=value)])
+
+def get_dpid(db, bridge):
+    return __get_ovs_attr(db, "Bridge", bridge, "datapath_id")
+
+def bridge_exist(db, bridge):
+    return __run_command(db,"br-exists", [bridge])
+
+def get_port_num(db, port_name):
+    return __get_ovs_attr(db,"Interface", port_name, "ofport")
+
+def create_bridge(db, name, dpid=None, protocols=None):
+    assert (name is not None), "The bridge name cannot be null"
+    assert (bridge_exist(db, name)), "The bridge already has exist "
+
+    ret = __run_command(db, "add-br", [name])
+
+    if ret is None:
+        if dpid is not None:
+            ret = __set_ovs_attr("Bridge", name, "other_config", dpid, "datapath_id")
+            if ret is not None:
+                raise ValueError(ret)
+        if protocols is not None:
+            assert (isinstance(protocols, list)), "the protocols must be a list object"
+            ptr = ".".join(protocols)
+            ret =  __set_ovs_attr(db, "Bridge", name, "protocols", ptr)
+            if ret is not None:
+                raise ValueError(ret)
+        return True
+    else:
+        raise Exception("It cannot create the bridge")
+
+
+def remove_bridge(db, name):
+    assert (name is not None), "The bridge name cannot be null"
+    assert (bridge_exist(db, name)), "The bridge is not exist"
+
+    ret = __run_command(db, "del-br", [name])
+    if ret is None:
+        return True
+    else:
+        raise ValueError(ret)
+
+def create_port(db, bridge_name, port_name, peer_name=None, type=None, ofport=None):
+    assert (bridge_exist(db, bridge_name)), "The bridge name cannot be null"
+    assert (port_name is not None), "The port name cannot be null"
+
+    ret = __run_command(db,"add-port", [bridge_name, port_name])
+    if ret is not None:
+        raise ValueError(ret)
+
+    if type is "patch":
+        assert (peer_name is not None), "The peer name cannot be null"
+        typ = __set_ovs_attr(db, "Interface", port_name, "type", "patch")
+        if typ is not None:
+            raise ValueError(typ)
+
+    if ofport > 0:
+        cfg = __set_ovs_attr(db,"Interface", port_name, "ofport_request", ofport)
+        if cfg is not None:
+            raise ValueError(cfg)
+
+    return get_port_num(db, port_name)
 
 class OvsdbController(RyuApp):
 
