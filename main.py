@@ -17,6 +17,7 @@ cfg.CONF.register_opts(opts)
 vswitch_default = {
     "name": None,
     "dpid": None,
+    "tenant": None,
     "protocols": [],
     "ports": {}
 }
@@ -117,19 +118,31 @@ class VSwitchManager(RyuApp):
         self.ovsdb = OvsdbController(self.CONF.ovsdb_controller)
         self.openflow = OpenflowController(self.CONF.openflow_controller)
 
-    def create_vswitch(self, name, dpid, protocols):
+    def count_vswitch(self):
+        return len(self.vswitch)
+
+    def create_vswitch(self, tenant, dpid=None, protocols=None):
+
+        if dpid is None:
+            dpid = str(uuid4()).replace("-","")[:16]
+
+        vswitch_name = "net{t}.{d}".format(t=tenant,d=dpid)
+
+        def rnd_dpid():
+            return str(uuid4()).replace("-","")[:16]
 
         def add():
-            self.ovsdb.add_br(name, dpid, protocols)
+            self.ovsdb.add_br(vswitch_name, dpid, protocols)
             self.logger.info(
                 "New virtual switch ({s}) dpid ({d}) has created".format(s=name, d=self.ovsdb.get_dpid(name)))
 
         def register():
             vswitch = vswitch_default.copy()
-            vswitch["name"] = name
-            vswitch["dpid"] = (dpid if dpid is not None else self.ovsdb.get_dpid(name))
+            vswitch["name"] = vswitch_name
+            vswitch["dpid"] = dpid
             vswitch["protocols"] = protocols
-            self.vswitch.update({name: vswitch})
+            vswitch["tenant"] =  tenant
+            self.vswitch.update({vswitch_name: vswitch})
 
         if not self.ovsdb.br_exist(name):
             try:
@@ -143,9 +156,6 @@ class VSwitchManager(RyuApp):
             self.logger.error("the vswitch already has exist")
             return [(False, "the vswitch already has exist")]
 
-    def count_vswitch(self):
-        return len(self.vswitch)
-
     def delete_vswitch(self, name):
 
         def rem():
@@ -153,7 +163,31 @@ class VSwitchManager(RyuApp):
             self.logger.info(
                 "the virtual switch ({s}) dpid ({d}) has removed".format(s=name, d=self.ovsdb.get_dpid(name)))
 
+        def unregister():
+            del(self.vswitch[name])
+            self.logger.info("the virtual switch ({s}) has unregistred".format(s=name))
+
+        try:
+            if self.ovsdb.br_exist(name):
+                rem()
+                unregister()
+                return [(True, None)]
+            else:
+                self.logger.info("the virtual switch ({s}) already exists".format(s=name))
+                return [(False, "the virtual switch not exists")]
+        except Exception as ex:
+            return [(False, ex)]
+
     def add_port(self, name, vswitch_name, vport_num, tport_num, type):
+        port = "net{t}.{tsw}.{vsw}.p{v}"
+
+
+        def add_vswitch():
+            self.ovsdb.add_port(vswitch_name, name, )
+
+
+
+
         pass
 
     def del_port(self, vswitch_name, vport_num):
