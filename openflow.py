@@ -1,7 +1,3 @@
-import logging
-
-from ryu.base.app_manager import RyuApp
-from ryu.controller.handler import set_ev_cls
 from ryu.lib import ofctl_v1_0
 from ryu.lib import ofctl_v1_2
 from ryu.lib import ofctl_v1_3
@@ -12,9 +8,6 @@ from ryu.ofproto import ofproto_v1_2
 from ryu.ofproto import ofproto_v1_3
 from ryu.ofproto import ofproto_v1_4
 from ryu.ofproto import ofproto_v1_5
-from ryu.topology import event
-from ryu.topology.switches import dpid_to_str
-from ryu.lib.ofctl_utils import str_to_int
 
 supported_ofctl = {
     ofproto_v1_0.OFP_VERSION: ofctl_v1_0,
