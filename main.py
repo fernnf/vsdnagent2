@@ -8,6 +8,7 @@ from ryu.controller.handler import set_ev_cls
 from ryu.services.protocols.ovsdb import event as evt_ovs
 from ryu.topology import event as evt_ofl
 from ryu.topology.switches import dpid_to_str
+from autobahn.twisted.wamp import Application
 
 import openflow as ofctl
 import ovsdb as ovsctl
@@ -34,6 +35,7 @@ vport_default = {
     "type": None,
 }
 
+wampapp = Application()
 
 class OvsdbController(object):
     logger = logging.getLogger("OvsdbController")
@@ -135,8 +137,10 @@ class VSwitchManager(RyuApp):
         self.ovsdb = OvsdbController(self.CONF.ovsdb_controller)
         self.openflow = OpenflowController(self.CONF.openflow_controller)
 
+
     def count_vswitch(self):
         return len(self.vswitch)
+
 
     def create_vswitch(self, tenant, dpid=None, protocols=None):
 
@@ -291,6 +295,8 @@ class VSwitchManager(RyuApp):
     def __ovsdb_connection(self, ev):
         self.ovsdb.set_status(True)
         tswitch = self.CONF.transport_switch
+        self.wampapp = Application("vsdnagent.node.{d}".format(d=self.ovsdb.get_dpid(tswitch)))
+        self.wampapp.session
 
         self.logger.info(
             "new ovsdb connection from {i} and system-id:{s} to vSDNAgent".format(i=ev.client.address[0],
