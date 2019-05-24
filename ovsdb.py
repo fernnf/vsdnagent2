@@ -46,13 +46,15 @@ def set_controller(db, bridge, controller):
 
 def create_bridge(db, name, dpid=None, protocols=None):
     assert (name is not None), "The bridge name cannot be null"
-    assert (bridge_exist(db, name)), "The bridge already has exist "
+
+    if bridge_exist(db, name):
+        raise Exception("The bridge already has exist")
 
     ret = __run_command(db, "add-br", [name])
 
     if ret is None:
         if dpid is not None:
-            ret = __set_ovs_attr(db, "Bridge", name, "other_config", dpid, "datapath_id")
+            ret = __set_ovs_attr(db, "Bridge", name, "other_config", dpid, "datapath-id")
             if ret is not None:
                 raise ValueError(ret)
         if protocols is not None:

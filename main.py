@@ -1,4 +1,4 @@
-import coloredlogs, logging
+import coloredlogs, logging, threading, sys
 from uuid import uuid4
 
 from ryu import cfg
@@ -8,7 +8,12 @@ from ryu.controller.handler import set_ev_cls
 from ryu.services.protocols.ovsdb import event as evt_ovs
 from ryu.topology import event as evt_ofl
 from ryu.topology.switches import dpid_to_str
+
+from autobahn import wamp
 from autobahn.twisted.wamp import Application
+from autobahn.twisted.component import Component, run
+from autobahn.twisted.wamp import ApplicationSession, ApplicationRunner
+from twisted.internet.defer import inlineCallbacks
 
 import openflow as ofctl
 import ovsdb as ovsctl
@@ -35,7 +40,6 @@ vport_default = {
     "type": None,
 }
 
-wampapp = Application()
 
 class OvsdbController(object):
     logger = logging.getLogger("OvsdbController")
@@ -52,7 +56,7 @@ class OvsdbController(object):
 
     def get_dpid(self, br_name):
         assert self.get_status(), "the ovsdb connection is not working"
-        return ovsctl.get_dpid(self.__ovsdb, br_name)
+        return ovsctl.get_dpid(self.__ovsdb, br_name)[0][0]
 
     def get_portnum(self, v):
         assert self.get_status(), "the ovsdb connection is not working"
@@ -94,7 +98,6 @@ class OvsdbController(object):
 class OpenflowController(object):
     logger = logging.getLogger("OpenFlowController")
 
-
     def __init__(self, dp):
         self.__dp = dp
         self.__status = False
@@ -126,9 +129,13 @@ class OpenflowController(object):
             self.logger.error("The type link value is unknown")
 
 
-class VSwitchManager(RyuApp):
+
+class VSwitchManager(RyuApp, ApplicationSession):
     logger = logging.getLogger("VSwitchManager")
     coloredlogs.install(logger=logger)
+
+    # component = Component(transports=u'ws://localhost:8080/ws',realm=u'realm1')
+    # application = Application()
 
     def __init__(self, *_args, **_kwargs):
         super(VSwitchManager, self).__init__(*_args, **_kwargs)
@@ -137,10 +144,22 @@ class VSwitchManager(RyuApp):
         self.ovsdb = OvsdbController(self.CONF.ovsdb_controller)
         self.openflow = OpenflowController(self.CONF.openflow_controller)
 
+    @inlineCallbacks
+    def onJoin(self, details):
+
+        url = "vsdnagent.node.{d}".format(d=self.ovsdb.get_dpid(self.CONF.transport_switch))
+
+        self.logger.info("the router wamp connected")
+        self.logger.info(url)
+        yield self.register(self.count_vswitch, "{u}.count_vswitch".format(u=url))
+        yield self.register(self.create_vswitch, "{u}.create_vswitch".format(u=url))
+        yield self.register(self.delete_vswitch, "{u}.delete_vswitch".format(u=url))
+        yield self.register(self.add_vport, "{u}.add_vport".format(u=url))
+        yield self.register(self.del_vport, "{u}.del_vport".format(u=url))
+        self.logger.info("all procedures registered!")
 
     def count_vswitch(self):
         return len(self.vswitch)
-
 
     def create_vswitch(self, tenant, dpid=None, protocols=None):
 
@@ -174,7 +193,7 @@ class VSwitchManager(RyuApp):
             return [(True, name)]
         except Exception as ex:
             self.logger.error(ex)
-            return [(False, ex)]
+            return [(False, str(ex))]
 
     def delete_vswitch(self, name):
 
@@ -295,12 +314,14 @@ class VSwitchManager(RyuApp):
     def __ovsdb_connection(self, ev):
         self.ovsdb.set_status(True)
         tswitch = self.CONF.transport_switch
-        self.wampapp = Application("vsdnagent.node.{d}".format(d=self.ovsdb.get_dpid(tswitch)))
-        self.wampapp.session
 
         self.logger.info(
             "new ovsdb connection from {i} and system-id:{s} to vSDNAgent".format(i=ev.client.address[0],
                                                                                   s=ev.system_id))
+
+        def start_wamp():
+            runner = ApplicationRunner(url=u"ws://127.0.0.1:8080/ws", realm="realm1")
+            runner.run(self)
 
         def transport_exist():
             if not self.ovsdb.br_exist(tswitch):
@@ -324,6 +345,7 @@ class VSwitchManager(RyuApp):
         try:
             if transport_exist():
                 ctl_config()
+                start_wamp()
         except Exception as ex:
             self.logger.error(ex)
 
