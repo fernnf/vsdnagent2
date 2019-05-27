@@ -24,7 +24,7 @@ opts = (cfg.StrOpt("ovsdb_controller", default="tcp:127.0.0.1:6641"),
 
 cfg.CONF.register_opts(opts)
 
-vswitch_default = {
+virtual_switch = {
     "name": None,
     "dpid": None,
     "tenant": None,
@@ -32,7 +32,7 @@ vswitch_default = {
     "vports": {}
 }
 
-vport_default = {
+virtual_port = {
     "name": None,
     "peer": None,
     "port_num": None,
@@ -58,6 +58,10 @@ class OvsdbController(object):
         assert self.get_status(), "the ovsdb connection is not working"
         return ovsctl.get_dpid(self.__ovsdb, br_name)[0][0]
 
+    def get_name(self, dpid):
+        assert self.get_status(), "the ovsdb connection is not working"
+        return ovsctl.get_name(self.__ovsdb, dpid)
+
     def get_portnum(self, v):
         assert self.get_status(), "the ovsdb connection is not working"
         return ovsctl.get_port_num(self.__ovsdb, v)
@@ -72,7 +76,7 @@ class OvsdbController(object):
 
     def add_br(self, name, dpid=None, protocols=None):
         assert self.get_status(), "the ovsdb connection is not working"
-        ovsctl.create_bridge(self.__ovsdb, name, dpid, protocols)
+        ovsctl.create_bridge(self.__ovsdb, name, dpid=dpid, protocols=protocols)
 
     def rem_br(self, name):
         assert self.get_status(), "the ovsdb connection is not working"
@@ -80,7 +84,7 @@ class OvsdbController(object):
 
     def add_port(self, br_name, port_name, peer_name=None, type=None, ofport=None):
         assert self.get_status(), "the ovsdb connection is not working"
-        return ovsctl.create_port(self.__ovsdb, br_name, port_name, peer_name, type, ofport)
+        return ovsctl.create_port(self.__ovsdb, br_name, port_name, peer_name=peer_name, type=type, ofport=ofport)
 
     def rem_port(self, br_name, port_name):
         assert self.get_status(), "the ovsdb connection is not working"
@@ -129,13 +133,9 @@ class OpenflowController(object):
             self.logger.error("The type link value is unknown")
 
 
-
 class VSwitchManager(RyuApp, ApplicationSession):
     logger = logging.getLogger("VSwitchManager")
     coloredlogs.install(logger=logger)
-
-    # component = Component(transports=u'ws://localhost:8080/ws',realm=u'realm1')
-    # application = Application()
 
     def __init__(self, *_args, **_kwargs):
         super(VSwitchManager, self).__init__(*_args, **_kwargs)
@@ -161,41 +161,35 @@ class VSwitchManager(RyuApp, ApplicationSession):
     def count_vswitch(self):
         return len(self.vswitch)
 
-    def create_vswitch(self, tenant, dpid=None, protocols=None):
-
-        def rnd_dpid():
-            return str(uuid4()).replace("-", "")[:16]
-
-        def rnd_vswitch_name():
-            return "vnet{t}.{d}".format(t=tenant, d=dpid)
-
-        if dpid is None:
-            dpid = rnd_dpid()
-
-        name = rnd_vswitch_name()
-
+    def create_vswitch(self, name, tenant, dpid, protocols):
         def add():
             self.ovsdb.add_br(name, dpid, protocols)
             self.logger.info(
-                "New virtual switch ({s}) dpid ({d}) has created".format(s=name, d=self.ovsdb.get_dpid(name)))
+                "New virtual switch ({s}) with dpid ({d}) has created".format(s=name, d=dpid))
 
         def register():
-            vswitch = vswitch_default.copy()
-            vswitch["name"] = name
-            vswitch["dpid"] = dpid
-            vswitch["protocols"] = protocols
-            vswitch["tenant"] = tenant
-            self.vswitch.update({name: vswitch})
+            vsw = {}
+            vsw.update({"name": name})
+            vsw.update({"dpid": dpid})
+            vsw.update({"tenant": tenant})
+            vsw.update({"protocols": protocols})
+            vsw.update({"virtual_ports": {}})
+            self.vswitch.update({name: vsw})
 
         try:
             add()
             register()
-            return [(True, name)]
+            return True, None
         except Exception as ex:
-            self.logger.error(ex)
-            return [(False, str(ex))]
+            return False, str(ex)
 
-    def delete_vswitch(self, name):
+    def delete_vswitch(self, **kwargs):
+
+        name = kwargs.get("name", None)
+        dpid = kwargs.get("dpid", None)
+
+        if name is None:
+            name = self.ovsdb.get_name(dpid)
 
         def rem():
             self.ovsdb.rem_br(name)
@@ -206,75 +200,52 @@ class VSwitchManager(RyuApp, ApplicationSession):
             del (self.vswitch[name])
             self.logger.info("the virtual switch ({s}) has unregistred".format(s=name))
 
-        if self.ovsdb.br_exist(name):
-            try:
-                rem()
-                unregister()
-                return [(True, None)]
-            except Exception as ex:
-                return [(False, ex)]
-        else:
-            self.logger.info("the virtual switch ({s}) not exists".format(s=name))
+        try:
 
-    def add_vport(self, vswitch_name, tport_num, type):
+            rem()
+            unregister()
+            return True, None
+        except Exception as ex:
+            return False, str(ex)
 
-        tswitch_name = self.CONF.transport_switch
-        if type is "vlan":
-            vid = vswitch_name.split(".")[0][4:]
+    def _get_port_name(self):
+        return "vport-{d}".format(d=str(uuid4())[6])
 
-        def register_vport(cfg):
-            self.vswitch[vswitch_name]["vports"].update(cfg)
+    def add_vport(self, vswitch, vport_num, tport_num, type):
 
-        def get_port_config():
-            vnet = vswitch_name.split(".")[0]
-            vsw_id = vswitch_name.split(".")[1]
-            tsw_id = self.ovsdb.get_dpid(tswitch_name)
-            vsw = self.vswitch.get(vswitch_name, None)
+        tswitch = self.CONF.transport_switch
+        name = self._get_port_name()
+        peer = self._get_port_name()
 
-            if vsw is not None:
-                id = len(vsw["vports"])
-                vport = vport_default.copy()
-                port_id = id + 1
-                peer_id = id + 50
-                vport["name"] = "{v}.{vd}.{td}.p{i}".format(v=vnet, vd=vsw_id, td=tsw_id, i=port_id)
-                vport["peer"] = "{v}.{td}.{vd}.p{i}".format(v=vnet, vd=vsw_id, td=tsw_id, i=peer_id)
-                vport["port_num"] = port_id
-                vport["peer_num"] = peer_id
-                vport["tport_num"] = tport_num
-                vport["type"] = {type: vid}
-                return vport.copy()
-            else:
-                raise ValueError("the vswitch not found")
+        def register():
+            vport = {}
+            vport.update({"name": name})
+            vport.update({"peer": peer})
+            vport.update({"port_num": vport_num})
+            vport.update({"type": type})
+            self.vswitch[vswitch]["virtual_ports"].update({vport_num: vport})
 
-        def add_link(cfg):
-            ingress = self.ovsdb.add_port(br_name=tswitch_name,
-                                          port_name=cfg["peer"],
-                                          peer_name=cfg["name"],
-                                          type="patch",
-                                          ofport=cfg["peer_num"])
+        def add_link():
+            ingress = self.ovsdb.add_port(tswitch, peer, name, "patch")
             if ingress is not None:
                 raise ValueError(ingress)
 
-            egress = self.ovsdb.add_port(br_name=vswitch_name,
-                                         port_name=cfg["name"],
-                                         peer_name=cfg["peer"],
-                                         type="patch",
-                                         ofport=cfg["port_num"])
-
+            egress = self.ovsdb.add_port(vswitch, name, peer, "patch", vport_num)
             if egress is not None:
                 raise ValueError(egress)
 
-            if self.openflow.add_link(tport_num, cfg["peer_num"], "vlan", vlan_id=vid):
-                self.logger.info("new port has added on vswitch {v}".format(v=vswitch_name))
+            peer_num = self.ovsdb.get_portnum(peer)
+            tenant = self.vswitch[vswitch]["tenant"]
+
+            if self.openflow.add_link(tport_num, peer_num, type, vlan_id=tenant):
+                self.logger.info("new port has added on vswitch {v}".format(v=vswitch))
 
         try:
-            cfg = get_port_config()
-            add_link(cfg)
-            register_vport(cfg)
-            return [(True, None)]
+            add_link()
+            register()
+            return True, None
         except Exception as ex:
-            self.logger.error(ex)
-            return [(False, ex)]
+            return False, str(ex)
 
     def del_vport(self, vswitch_name, vport_num):
 
