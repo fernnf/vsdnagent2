@@ -247,39 +247,33 @@ class VSwitchManager(RyuApp, ApplicationSession):
         except Exception as ex:
             return False, str(ex)
 
-    def del_vport(self, vswitch_name, vport_num):
+    def del_vport(self, vswitch, vport_num):
 
-        tswitch_name = self.CONF.transport_switch
+        tswitch = self.CONF.transport_switch
+        vport = self.vswitch[vswitch]["virtual_ports"].get(vport_num, None)
 
-        def unregister_port(cfg):
-            del (self.vswitch[vswitch_name]["vports"][cfg])
+        def rem():
+            if vport is not None:
+                self.ovsdb.rem_port(br_name=tswitch, port_name=vport["peer"])
+                self.ovsdb.rem_port(br_name=vswitch, port_name=vport["name"])
 
-        def get_config_port():
-            vports = self.vswitch.get(vswitch_name, None)
-            if vports is not None:
-                for port in vports:
-                    if port["port_num"] == vport_num:
-                        return port
-
+                vlan_id = self.vswitch[vswitch].get("tenant")
+                ret = self.openflow.rem_link(vport["tport_num"], vport["peer_num"], "vlan", vlan_id=vlan_id)
+                if ret:
+                    self.logger.info(
+                        "the port ({p}) has removed from vswitch {v}".format(p=vport["name"], v=vswitch))
             else:
-                raise ValueError("the vswitch is not registred")
+                raise ValueError("the vport does not exist")
 
-        def rem_link(cfg):
-
-            self.ovsdb.rem_port(br_name=tswitch_name, port_name=cfg["peer"])
-            self.ovsdb.rem_port(br_name=vswitch_name, port_name=cfg["name"])
-            ret = self.openflow.rem_link(cfg["tport_num"], cfg["peer_num"], "vlan", vlan_id=cfg["type"]["vlan"])
-            if ret:
-                self.logger.info("the port ({p}) has removed from vswitch {v}".format(p=cfg["name"], v=vswitch_name))
+        def unregister():
+            del (self.vswitch[vswitch]["virtual_ports"][vport_num])
 
         try:
-            cfg = get_config_port()
-            rem_link(cfg)
-            unregister_port(cfg)
-            return [(True, None)]
-        except  Exception as ex:
-            self.logger.error(ex)
-            return [(False, ex)]
+            rem()
+            unregister()
+            return True, None
+        except Exception as ex:
+            return False, str(ex)
 
     @set_ev_cls(evt_ovs.EventNewOVSDBConnection)
     def __ovsdb_connection(self, ev):
