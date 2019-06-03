@@ -1,7 +1,7 @@
 import coloredlogs, logging, threading, sys
 from uuid import uuid4
 
-
+import traceback
 from ryu.cmd import manager
 from ryu import cfg
 from ryu.base.app_manager import RyuApp
@@ -86,7 +86,7 @@ class OvsdbController(object):
 
     def add_port(self, br_name, port_name, peer_name=None, type=None, ofport=None):
         assert self.get_status(), "the ovsdb connection is not working"
-        return ovsctl.create_port(self.__ovsdb, br_name, port_name, peer_name=peer_name, type=type, ofport=ofport)
+        return ovsctl.create_port(self.__ovsdb, name=port_name, bridge=br_name, peer_name=peer_name, type=type, ofport=ofport)
 
     def rem_port(self, br_name, port_name):
         assert self.get_status(), "the ovsdb connection is not working"
@@ -116,13 +116,14 @@ class OpenflowController(object):
 
     def add_link(self, tport, vport, type, **kwargs):
         assert self.get_status(), "the openflow connection is not working"
-        if type is "vlan":
+        if type.__eq__("vlan"):
             vid = kwargs.get("vlan_id", None)
+            print(vid)
             if vid is None:
                 raise ValueError("The vlan id cannot be null")
             return ofctl.add_vlan_link(self.__dp, tport, vport, vid)
         else:
-            self.logger.error("The type link value is unknown")
+            raise ValueError("The type ({t}) link value is unknown".format(t=type))
 
     def rem_link(self, tport, vport, type, **kwargs):
         assert self.get_status(), "the openflow connection is not working"
@@ -144,7 +145,7 @@ class VSwitchManager(RyuApp, ApplicationSession):
 
         self.vswitch = {}
         self.ovsdb = OvsdbController(self.CONF.ovsdb_controller)
-        self.openflow = OpenflowController(self.CONF.openflow_controller)
+        self.openflow = None
 
     @inlineCallbacks
     def onJoin(self, details):
@@ -186,18 +187,15 @@ class VSwitchManager(RyuApp, ApplicationSession):
         except Exception as ex:
             return False, str(ex)
 
-    def delete_vswitch(self, **kwargs):
+    def delete_vswitch(self, name):
 
-        name = kwargs.get("name", None)
-        dpid = kwargs.get("dpid", None)
 
-        if name is None:
-            name = self.ovsdb.get_name(dpid)
 
         def rem():
+            dpid = self.ovsdb.get_dpid(name)
             self.ovsdb.rem_br(name)
             self.logger.info(
-                "the virtual switch ({s}) dpid ({d}) has removed".format(s=name, d=self.ovsdb.get_dpid(name)))
+                "the virtual switch ({s}) dpid ({d}) has removed".format(s=name, d=dpid))
 
         def unregister():
             del (self.vswitch[name])
@@ -212,7 +210,7 @@ class VSwitchManager(RyuApp, ApplicationSession):
             return False, str(ex)
 
     def _get_port_name(self):
-        return "vport-{d}".format(d=str(uuid4())[6])
+        return "vport-{d}".format(d=str(uuid4())[:7])
 
     def add_vport(self, vswitch, vport_num, tport_num, type):
 
@@ -228,6 +226,8 @@ class VSwitchManager(RyuApp, ApplicationSession):
             vport.update({"type": type})
             self.vswitch[vswitch]["virtual_ports"].update({vport_num: vport})
 
+            print(vport)
+
         def add_link():
             ingress = self.ovsdb.add_port(tswitch, peer, name, "patch")
             if ingress is not None:
@@ -236,11 +236,21 @@ class VSwitchManager(RyuApp, ApplicationSession):
             egress = self.ovsdb.add_port(vswitch, name, peer, "patch", vport_num)
             if egress is not None:
                 raise ValueError(egress)
+            print(peer)
+            peer_num = str(self.ovsdb.get_portnum(peer)[0])
+            print(peer_num)
 
-            peer_num = self.ovsdb.get_portnum(peer)
-            tenant = self.vswitch[vswitch]["tenant"]
+            print(vswitch, self.vswitch)
+            vsw = self.vswitch.get(vswitch, None)
+            print(vsw)
+            tenant = vsw.get("tenant", None)
+            # tenant = self.vswitch[vswitch].get("tenant", None)
+            print(tenant)
 
-            if self.openflow.add_link(tport_num, peer_num, type, vlan_id=tenant):
+            print("entering on openflow link config")
+            link = self.openflow.add_link(tport_num, peer_num, type, vlan_id=tenant)
+
+            if link:
                 self.logger.info("new port has added on vswitch {v}".format(v=vswitch))
 
         try:
@@ -248,6 +258,7 @@ class VSwitchManager(RyuApp, ApplicationSession):
             register()
             return True, None
         except Exception as ex:
+
             return False, str(ex)
 
     def del_vport(self, vswitch, vport_num):
@@ -319,6 +330,7 @@ class VSwitchManager(RyuApp, ApplicationSession):
 
     @set_ev_cls(evt_ofl.EventSwitchEnter)
     def __tswitch_connection(self, ev):
+        self.openflow = OpenflowController(ev.switch.dp)
         self.openflow.set_status(True)
         self.logger.info(
-            "transport switch dpid {id} has connected to vSDNAgent".format(id=dpid_to_str(ev.switch.dp.id)))
+            "Openflow transport switch dpid {id} has connected to vSDNAgent".format(id=dpid_to_str(ev.switch.dp.id)))

@@ -1,103 +1,68 @@
-from ryu.lib import ofctl_v1_0
-from ryu.lib import ofctl_v1_2
-from ryu.lib import ofctl_v1_3
-from ryu.lib import ofctl_v1_4
-from ryu.lib import ofctl_v1_5
-from ryu.ofproto import ofproto_v1_0
-from ryu.ofproto import ofproto_v1_2
-from ryu.ofproto import ofproto_v1_3
-from ryu.ofproto import ofproto_v1_4
-from ryu.ofproto import ofproto_v1_5
+from ryu.ofproto import ofproto_v1_3, ofproto_v1_3_parser
 
-supported_ofctl = {
-    ofproto_v1_0.OFP_VERSION: ofctl_v1_0,
-    ofproto_v1_2.OFP_VERSION: ofctl_v1_2,
-    ofproto_v1_3.OFP_VERSION: ofctl_v1_3,
-    ofproto_v1_4.OFP_VERSION: ofctl_v1_4,
-    ofproto_v1_5.OFP_VERSION: ofctl_v1_5
+
+proto = ofproto_v1_3
+parser = ofproto_v1_3_parser
+
+cmd_supported = {
+    "add": proto.OFPFC_ADD,
+    "modify": proto.OFPFC_MODIFY,
+    "modify_strict": proto.OFPFC_MODIFY_STRICT,
+    "delete": proto.OFPFC_DELETE,
+    "delete_strict": proto.OFPFC_DELETE_STRICT
 }
 
 
-def __mod_flow(dp, flow, cmd):
-    cmd_supported = {
-        "add": dp.ofproto.OFPFC_ADD,
-        "modify": dp.ofproto.OFPFC_MODIFY,
-        "modify_strict": dp.ofproto.OFPFC_MODIFY_STRICT,
-        "delete": dp.ofproto.OFPFC_DELETE,
-        "delete_strict": dp.ofproto.OFPFC_DELETE_STRICT
-    }
+def __send_mod(dp, out_port, match, inst, cmd):
+    cookie = cookie_mask = 0
+    table_id = 0
+    idle_timeout = hard_timeout = 0
+    priority = 0
+    buffer_id = proto.OFP_NO_BUFFER
+    out_group = proto.OFPG_ANY
+    flags = 0
 
+    req = parser.OFPFlowMod(dp, cookie, cookie_mask, table_id,
+                            cmd, idle_timeout, hard_timeout, priority,
+                            buffer_id, out_port, out_group, flags,
+                            match, inst)
+    return dp.send_msg(req)
+
+
+def link_vlan(dp, in_port, out_port, vlan_id, cmd):
     mod_cmd = cmd_supported.get(cmd, None)
 
     if mod_cmd is None:
-        raise ValueError("command not found")
+        raise ValueError("Command not found")
 
-    ofctl = supported_ofctl.get(dp.ofproto.OFP_VERSION)
+    def ingress():
+        actions = [parser.OFPActionPopVlan(),
+                   parser.OFPActionOutput(port=int(out_port))]
+        inst = [parser.OFPInstructionActions(proto.OFPIT_APPLY_ACTIONS, actions)]
+        match = parser.OFPMatch(in_port=int(in_port), vlan_vid=(int(vlan_id) + 0x1000))
 
-    ofctl.mod_flow_entry(dp, flow, mod_cmd)
-
-
-def __get_match(**matchs):
-    mtch = {}
-    data = {}
-    for k, v in matchs.items():
-        data[k] = v
-
-    mtch["match"] = data
-
-    return mtch.copy()
+        return __send_mod(dp, int(out_port), match, inst, mod_cmd)
 
 
-def __get_actions(*actions):
-    act = {}
-    data = []
 
-    for v in actions:
-        data.append(v)
+    def egress():
+        ethertype = 33024
 
-    act["actions"] = data
+        match = parser.OFPMatch(in_port=int(out_port))
+        actions = [parser.OFPActionPushVlan(ethertype),
+                   parser.OFPActionSetField(vlan_vid=(int(vlan_id) + 0x1000)),
+                   parser.OFPActionOutput(port=int(in_port))]
 
-    return act.copy()
+        ints = [parser.OFPInstructionActions(proto.OFPIT_APPLY_ACTIONS, actions)]
 
+        return __send_mod(dp, int(in_port), match, ints, mod_cmd)
 
-def __get_flow(match, actions, **attr):
-    flow = {}
-
-    for k, v in attr.items():
-        flow[k] = v
-
-    flow.update(match)
-    flow.update(actions)
-
-    return flow.copy()
+    return egress() and ingress()
 
 
-def __vlan_link(dp, tport, vport, vlan, cmd):
-    def link_ingress():
-        match = __get_match(in_port=tport, vlan_vid=vlan)
-        actions = __get_actions({"type": "POP_VLAN"},
-                                {"type": "OUTPUT", "port": vport})
-        flow = __get_flow(match, actions, flag=0)
-
-        __mod_flow(dp=dp, flow=flow, cmd=cmd)
-
-    def link_egress():
-        match = __get_match(in_port=vport)
-        actions = __get_actions({"type": "PUSH_VLAN", "ethertype": 33024},
-                                {"type": "SET_FIELD", "field": "vlan_vid", "value": (int(vlan) + 0x1000)},
-                                {"type": "OUTPUT", "port": tport})
-        flow = __get_flow(match, actions, flag=1)
-
-        __mod_flow(dp=dp, flow=flow, cmd=cmd)
-
-    link_egress()
-    link_ingress()
-    return True
-
-
-def add_vlan_link(dp, tport, vport, vlan_id):
-    return __vlan_link(dp, tport, vport, vlan_id, cmd="add")
+def add_vlan_link(dp, in_port, out_port, vlan_id):
+    return link_vlan(dp, in_port, out_port, vlan_id, cmd="add")
 
 
 def rem_vlan_link(dp, tport, vport, vlan_id):
-    return __vlan_link(dp, tport, vport, vlan_id, cmd="delete_strict")
+    return link_vlan(dp, tport, vport, vlan_id, cmd="delete")

@@ -47,8 +47,6 @@ def get_name(db, dpid):
 
     return __run_command(db, "find", ["Bridge", "datapath_id={d}".format(d=dpid)])[0].name
 
-
-
 def create_bridge(db, name, **kwargs):
     assert (name is not None), "The bridge name cannot be null"
 
@@ -82,6 +80,7 @@ def remove_bridge(db, name):
         raise ValueError("The bridge does not exist")
 
     ret = __run_command(db, "del-br", [name])
+    print(ret)
     if ret is not None:
         raise ValueError(ret)
 
@@ -96,6 +95,8 @@ def create_port(db, name, bridge, **kwargs):
     if not bridge_exist(db, bridge):
         raise ValueError("The bridge does not exist")
 
+    print(bridge, name)
+
     ret = __run_command(db, "add-port", [bridge, name])
     if ret is not None:
         raise ValueError(ret)
@@ -104,12 +105,12 @@ def create_port(db, name, bridge, **kwargs):
         if type is "patch":
             port = __set_ovs_attr(db, "Interface", name, "type", type)
             if port is not None:
-                raise ValueError(port)
+                raise ValueError("port config error: "+port)
 
             if peer_name is not None:
                 peer = __set_ovs_attr(db, "Interface", name, "options", peer_name, "peer")
                 if peer is not None:
-                    raise ValueError(peer)
+                    raise ValueError("peer config error: "+peer)
             else:
                 raise ValueError("the peer_name is necessary with patch port")
         else:
@@ -118,7 +119,7 @@ def create_port(db, name, bridge, **kwargs):
     if ofport is not None:
         of = __set_ovs_attr(db, "Interface", name, "ofport_request", ofport)
         if of is not None:
-            raise ValueError(of)
+            raise ValueError("ofport config error: "+of)
 
 
 def delete_port(db, bridge, name):
